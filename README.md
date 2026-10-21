@@ -33,6 +33,7 @@ Structured JSON response
 - **VAD**: avoids spending inference time on long silent regions.
 - **Temporary files**: keeps this demo simple and avoids retaining user audio by default.
 - **Bounded inference concurrency**: Whisper inference is compute-heavy, so requests are not allowed to start an unlimited number of model runs in one process.
+- **Pinned PyAV compatibility**: `faster-whisper==1.2.1` is paired with `av>=11,<19` because PyAV 19 removed an argument still used by that faster-whisper release.
 
 ## Supported formats
 
@@ -159,12 +160,12 @@ For small files, a synchronous `/transcribe` endpoint like the implementation in
 ```text
 WHISPER_MODEL=small
 WHISPER_DEVICE=cpu
-WHISPER_COMPUTE_TYPE=int8
+WHISPER_COMPUTE_TYPE=float32
 TRANSCRIBE_CONCURRENCY=1
 MAX_UPLOAD_BYTES=104857600
 ```
 
-For GPU deployment, a typical starting point would be `WHISPER_DEVICE=cuda`, followed by benchmarking the appropriate model/compute type for the available GPU.
+For this Mac/CPU demo I use `WHISPER_COMPUTE_TYPE=float32` for compatibility. For GPU deployment I would switch `WHISPER_DEVICE=cuda` and benchmark the best model/compute type for the available GPU.
 
 ## What I would monitor in production
 
