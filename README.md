@@ -1,90 +1,71 @@
-# Volga Partners — Audio Transcription Pipeline
+# Audio Transcription Service
 
-A small production-minded transcription service built for the Volga Partners AI Engineer assessment.
+A small FastAPI service that accepts audio files, normalizes them with FFmpeg, transcribes speech with `faster-whisper`, and returns timestamped segments as JSON.
 
-It accepts common audio files, normalizes them with FFmpeg, transcribes speech locally with `faster-whisper`, and returns both the full transcript and segment-level timestamps as JSON.
+## Features
 
-## Architecture
+- WAV, MP3, M4A, FLAC, OGG and WebM input
+- streamed uploads with a configurable size limit
+- FFmpeg normalization to 16 kHz mono PCM WAV
+- language detection and segment-level timestamps
+- voice activity detection
+- bounded transcription concurrency
+- automatic cleanup of temporary files
+- Docker support
+
+## Request flow
 
 ```text
-Client
-  |
-  | multipart audio upload
-  v
+audio upload
+    |
+    v
 FastAPI /transcribe
-  |
-  | validate + stream to temporary storage
-  v
+    |
+    v
+validate + stream to temporary file
+    |
+    v
 FFmpeg normalization
-  |  (mono, 16 kHz PCM WAV)
-  v
-faster-whisper + VAD
-  |
-  | segment text + timestamps
-  v
-Structured JSON response
+    |
+    v
+faster-whisper
+    |
+    v
+JSON response with transcript + timestamps
 ```
 
-## Why these choices?
-
-- **Python + FastAPI**: small amount of code, good request validation, automatic OpenAPI/Swagger docs, and a stack I have used for AI/backend services.
-- **faster-whisper**: local speech-to-text, segment timestamps, language detection, and no paid transcription dependency for the assessment.
-- **FFmpeg**: reliable format/codec decoding and one consistent model input format.
-- **VAD**: avoids spending inference time on long silent regions.
-- **Temporary files**: keeps this demo simple and avoids retaining user audio by default.
-- **Bounded inference concurrency**: Whisper inference is compute-heavy, so requests are not allowed to start an unlimited number of model runs in one process.
-- **Pinned PyAV compatibility**: `faster-whisper==1.2.1` is paired with `av>=11,<19` because PyAV 19 removed an argument still used by that faster-whisper release.
-
-## Supported formats
-
-- WAV
-- MP3
-- M4A
-- FLAC
-- OGG
-- WebM
-
-Regardless of the source codec, FFmpeg converts the recording to **16 kHz mono PCM WAV** before transcription.
-
-## Run locally
-
-### 1. Prerequisites
+## Requirements
 
 - Python 3.10+
-- FFmpeg installed and available on `PATH`
-- Internet access on the first run so the selected Whisper model can be downloaded
+- FFmpeg available on `PATH`
 
-### 2. Create the environment
+On macOS:
 
 ```bash
-python -m venv .venv
+brew install ffmpeg
+```
+
+## Setup
+
+```bash
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-On Windows:
-
-```powershell
-.venv\Scripts\activate
-```
-
-### 3. Start the API
+Start the service:
 
 ```bash
-uvicorn app:app --reload --host 127.0.0.1 --port 8000
+uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Open the interactive API documentation at:
+Interactive API documentation is available at:
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
-### 4. Transcribe a file
-
-Using Swagger UI: open `/docs` → `POST /transcribe` → **Try it out** → choose an audio file → **Execute**.
-
-Or with cURL:
+## Usage
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/transcribe" \
@@ -93,7 +74,7 @@ curl -X POST "http://127.0.0.1:8000/transcribe" \
   -F "file=@sample.mp3"
 ```
 
-## Example response
+Example response:
 
 ```json
 {
@@ -102,86 +83,60 @@ curl -X POST "http://127.0.0.1:8000/transcribe" \
   "duration_seconds": 8.42,
   "text": "Hello everyone. This is a quick transcription test.",
   "segments": [
-    {"start": 0.48, "end": 2.16, "text": "Hello everyone."},
-    {"start": 2.32, "end": 5.91, "text": "This is a quick transcription test."}
+    {
+      "start": 0.48,
+      "end": 2.16,
+      "text": "Hello everyone."
+    },
+    {
+      "start": 2.32,
+      "end": 5.91,
+      "text": "This is a quick transcription test."
+    }
   ]
 }
 ```
 
-## Handling concurrent uploads
-
-Uploads are streamed to temporary files in 1 MB blocks rather than being loaded completely into memory. FFmpeg and Whisper run outside the async event loop so FastAPI remains responsive. Model inference is protected by a configurable semaphore (`TRANSCRIBE_CONCURRENCY`, default `1`) because CPU/GPU inference is the expensive resource.
-
-In production, I would run multiple isolated transcription workers and put long-running jobs behind a queue such as Redis + Celery/RQ. The API layer remains stateless and can scale independently.
-
-## Storage design
-
-This assessment deletes temporary audio automatically after each request. That is intentional: the core requirement does not require retention, and retaining recordings creates privacy and lifecycle concerns.
-
-For a production system I would store original/normalized audio in object storage such as S3 and save transcript metadata in PostgreSQL. A transcript record would contain fields such as `job_id`, object key, status, language, duration, timestamps/segments, model version, retry count, and created/updated timestamps. Retention policies or deletion jobs would control how long audio remains available.
-
-## Retry and recovery
-
-I would classify failures into retryable and non-retryable cases:
-
-- **Retryable:** transient storage/network errors, temporary worker failure, GPU out-of-memory after worker recovery, model service timeout.
-- **Non-retryable:** corrupt audio, unsupported codec, empty input, validation failure.
-
-Queued jobs would use bounded retries with exponential backoff and jitter. Each job would have an idempotent ID so a retry updates the same job instead of creating duplicate transcript records. After the retry limit, the job would move to a failed/dead-letter state with the error reason recorded for debugging.
-
-## Long audio
-
-The demo endpoint is synchronous because it keeps the assessment easy to run. `faster-whisper` performs internal segmentation and VAD, so longer files can still be processed, but holding an HTTP request open for a 60–90 minute recording is not how I would ship it at scale.
-
-For production I would:
-
-1. Upload directly to object storage.
-2. Create a transcription job and return `202 Accepted` with a job ID.
-3. Process audio in background workers.
-4. Chunk long recordings into manageable windows (for example 30–60 seconds), with a small overlap where needed.
-5. Add each chunk's original offset to its segment timestamps.
-6. Merge overlapping text carefully to avoid duplicated words.
-7. Persist progress so a failed worker can resume rather than restarting an hour-long file.
-
-## API shape for a production version
-
-```text
-POST /v1/transcriptions           -> create job / upload reference
-GET  /v1/transcriptions/{job_id}  -> status + metadata
-GET  /v1/transcriptions/{job_id}/result -> transcript + segments
-DELETE /v1/transcriptions/{job_id} -> delete transcript/audio according to policy
-GET  /health                      -> liveness
-```
-
-For small files, a synchronous `/transcribe` endpoint like the implementation in this repository is also useful for local tools and low-volume use cases.
-
 ## Configuration
 
-```text
-WHISPER_MODEL=small
-WHISPER_DEVICE=cpu
-WHISPER_COMPUTE_TYPE=float32
-TRANSCRIBE_CONCURRENCY=1
-MAX_UPLOAD_BYTES=104857600
+The service can be configured with environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WHISPER_MODEL` | `small` | transcription model |
+| `WHISPER_DEVICE` | `cpu` | inference device |
+| `WHISPER_COMPUTE_TYPE` | `float32` | compute type |
+| `TRANSCRIBE_CONCURRENCY` | `1` | simultaneous transcription jobs per process |
+| `MAX_UPLOAD_BYTES` | `104857600` | upload size limit |
+| `DEBUG_ERRORS` | `0` | include internal exception details in HTTP 500 responses |
+
+## Design notes
+
+### Audio handling
+
+Uploads are written to disk in 1 MB blocks so the complete file is never held in memory. FFmpeg handles container and codec differences and converts every supported input into the same format before transcription.
+
+### Model lifecycle
+
+The transcription model is loaded once per process and reused across requests. This avoids paying model initialization cost on every request.
+
+### Concurrency
+
+FFmpeg and transcription are blocking workloads, so both are moved off the event loop. A semaphore limits concurrent transcription jobs to prevent a single process from exhausting CPU or GPU memory.
+
+### Long recordings
+
+The current endpoint is synchronous and works well for small and medium recordings. For long-running workloads, the next step would be an asynchronous job API with object storage and background workers. Large files can be processed in chunks while preserving timestamp offsets, and chunk progress can be persisted for recovery.
+
+### Storage and retries
+
+Temporary files are deleted automatically after each request. A production deployment that needs retention would store source audio in object storage and transcript metadata in a database. Transient infrastructure failures should use bounded retries; invalid or corrupted audio should fail without retrying.
+
+## Docker
+
+```bash
+docker build -t transcription-service .
+docker run --rm -p 8000:8000 transcription-service
 ```
 
-For this Mac/CPU demo I use `WHISPER_COMPUTE_TYPE=float32` for compatibility. For GPU deployment I would switch `WHISPER_DEVICE=cuda` and benchmark the best model/compute type for the available GPU.
-
-## What I would monitor in production
-
-- end-to-end processing latency
-- queue wait time
-- real-time factor (processing time / audio duration)
-- failure and retry rate
-- upload size / duration distribution
-- CPU/GPU and memory utilization
-- empty or low-confidence transcription rate
-- model/version used for every transcript
-
-I would evaluate transcription quality separately using representative recordings and WER/CER where ground-truth transcripts are available.
-
-## Scope / trade-offs
-
-I intentionally kept the submitted implementation small. It demonstrates the requested flow—file input, format normalization, transcription, and segment timestamps—without hiding the important logic behind a large framework.
-
-Production concerns such as authentication, object storage, Redis/Celery, database persistence, webhooks, speaker diarization, rate limiting, and distributed tracing are described above but are not required to run the core assessment.
+Then open `http://127.0.0.1:8000/docs`.
