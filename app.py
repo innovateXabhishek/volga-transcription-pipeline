@@ -13,9 +13,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-logger = logging.getLogger("volga-transcription")
+logger = logging.getLogger("transcription-service")
 
-APP_TITLE = "Volga Audio Transcription API"
+APP_TITLE = "Audio Transcription API"
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", 100 * 1024 * 1024))
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"}
 TRANSCRIBE_CONCURRENCY = max(1, int(os.getenv("TRANSCRIBE_CONCURRENCY", "1")))
@@ -24,9 +24,9 @@ TRANSCRIBE_CONCURRENCY = max(1, int(os.getenv("TRANSCRIBE_CONCURRENCY", "1")))
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float32")
-DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
+DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "0") == "1"
 
-app = FastAPI(title=APP_TITLE, version="1.0.1")
+app = FastAPI(title=APP_TITLE, version="1.0.0")
 inference_slots = asyncio.Semaphore(TRANSCRIBE_CONCURRENCY)
 
 
@@ -164,7 +164,7 @@ async def transcribe(file: UploadFile = File(...)) -> dict:
             detail=f"Unsupported audio type. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
         )
 
-    with tempfile.TemporaryDirectory(prefix="volga_transcription_") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="transcription_") as temp_dir:
         temp_path = Path(temp_dir)
         source = temp_path / f"input{suffix}"
         normalized = temp_path / "normalized.wav"
